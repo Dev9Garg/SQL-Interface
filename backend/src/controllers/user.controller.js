@@ -2,6 +2,7 @@ import {apiResponse} from '../utils/apiResponse.js'
 import { User } from '../models/user.model.js'
 import {asyncHandler} from "../utils/asyncHandler.js"
 import bcrypt from "bcrypt"
+import { where } from 'sequelize'
 
 const register = asyncHandler(async (req, res) => {
     const {username, email, fullName, password} = req.body;
@@ -19,7 +20,7 @@ const register = asyncHandler(async (req, res) => {
         )
     }
 
-    const existingUser = User.findOne({
+    const existingUser = await User.findOne({
         where: {
             email: email
         }
