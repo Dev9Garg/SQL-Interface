@@ -17,4 +17,4 @@ connectdb()
     console.log("Something went wrong while connecting to database : ", err);
   });
 
-modelSync();
+// modelSync();
