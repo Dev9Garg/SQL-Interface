@@ -2,6 +2,7 @@ import {apiResponse} from '../utils/apiResponse.js'
 import { User } from '../models/user.model.js'
 import {asyncHandler} from "../utils/asyncHandler.js"
 import bcrypt from "bcrypt"
+import { sequelize } from '../db/index.js'
 
 const generateAccessAndRefreshToken = async (userId) => {
     try {
@@ -74,22 +75,57 @@ const register = asyncHandler(async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const createdUser = await User.create({
-        username: username,
-        email: email,
-        fullName: fullName,
-        password: hashedPassword
-    })
-
-    if(!createdUser) {
-        return res
-        .status(500)
-        .json(
+    try {
+        await sequelize.transaction(async (t) => {
+            await User.create({
+                username: username,
+                email: email,
+                fullName: fullName,
+                password: hashedPassword
+            },
             {
-                success: false,
-                message: "Something went wrong while registering you !!"
-            }
-        )
+                transaction: t
+            })
+    
+            // 1. Create database user principal
+            await sequelize.query(
+                `CREATE USER [app_user_${username}] WITHOUT LOGIN;`,
+                { transaction: t }
+            )
+    
+            // 2. Create schema owned by that principal(user)
+            await sequelize.query(
+                `CREATE SCHEMA [user_${username}] AUTHORIZATION [app_user_${username}];`,
+                { transaction: t }
+            )
+    
+            // 3. Grant rights on the new schema
+            await sequelize.query(
+                `GRANT SELECT, INSERT, UPDATE, DELETE, ALTER ON SCHEMA::[user_${username}] TO [app_user_${username}];`,
+                { transaction: t }
+            );
+
+            // 4. Grant CREATE TABLE right at the database level
+            await sequelize.query(
+                `GRANT CREATE TABLE TO [app_user_${username}];`,
+                { transaction: t }
+            );
+    
+            // 5. Deny access to dbo
+            await sequelize.query(
+                `DENY SELECT, INSERT, UPDATE, DELETE, ALTER ON SCHEMA::dbo TO [app_user_${username}];`,
+                { transaction: t }
+            );
+    
+            // 6. (Optional) Set default schema for easier queries
+            await sequelize.query(
+                `ALTER USER [app_user_${username}] WITH DEFAULT_SCHEMA = [user_${username}];`,
+                { transaction: t }
+            );
+        })
+    } catch (err) {
+        console.error("Schema setup failed:", err.original?.message || err.message);
+        throw err;
     }
 
     return res
@@ -97,7 +133,6 @@ const register = asyncHandler(async (req, res) => {
     .json(
         new apiResponse(
             200,
-            createdUser,
             "User registered successfully !!"
         )
     )
@@ -158,6 +193,17 @@ const login = asyncHandler(async (req, res) => {
         }
     )
 
+    if(!loggedInUser) {
+        return res
+        .status(500)
+        .json(
+            {
+                success: false,
+                message: "Something went wrong while logging you in, pls try again !!"
+            }
+        )
+    }
+
     const options = {
         httpOnly: true,
         secure: true
@@ -206,8 +252,24 @@ const logout = asyncHandler(async (req, res) => {
     )
 })
 
+const SQLQueryExecutor = asyncHandler(async (req, res) => {
+    const {SQLQuery} = req.body;
+
+    const [rows] = await sequelize.query(SQLQuery)
+
+    return res
+    .json(
+        new apiResponse(
+            200,
+            rows,
+            "query executed successfully !!"
+        )
+    )
+})
+
 export {
     register,
     login,
-    logout
+    logout,
+    SQLQueryExecutor
 }
